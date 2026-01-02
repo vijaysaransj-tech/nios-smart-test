@@ -1,26 +1,72 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { motion } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
 import { z } from 'zod';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { GraduationCap, Lock, User, AlertCircle, ArrowLeft, Shield } from 'lucide-react';
-
-// Static admin credentials - in production, this would be validated server-side
-const ADMIN_USERNAME = 'thinkezhubtwisters';
-const ADMIN_PASSWORD = 'met...oss';
+import { GraduationCap, Lock, Mail, AlertCircle, ArrowLeft, Shield } from 'lucide-react';
+import { supabase } from '@/integrations/supabase/client';
+import { User, Session } from '@supabase/supabase-js';
 
 const loginSchema = z.object({
-  username: z.string().min(1, 'Username is required'),
-  password: z.string().min(1, 'Password is required'),
+  email: z.string().email('Please enter a valid email address'),
+  password: z.string().min(6, 'Password must be at least 6 characters'),
 });
 
 export default function AdminLogin() {
   const navigate = useNavigate();
-  const [formData, setFormData] = useState({ username: '', password: '' });
+  const [formData, setFormData] = useState({ email: '', password: '' });
   const [error, setError] = useState<string | null>(null);
   const [isLoading, setIsLoading] = useState(false);
+  const [isSignUp, setIsSignUp] = useState(false);
+  const [user, setUser] = useState<User | null>(null);
+  const [session, setSession] = useState<Session | null>(null);
+
+  useEffect(() => {
+    // Set up auth state listener
+    const { data: { subscription } } = supabase.auth.onAuthStateChange(
+      (event, session) => {
+        setSession(session);
+        setUser(session?.user ?? null);
+        
+        if (session?.user) {
+          // Check if user has admin role
+          setTimeout(() => {
+            checkAdminAndRedirect(session.user.id);
+          }, 0);
+        }
+      }
+    );
+
+    // Check for existing session
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setSession(session);
+      setUser(session?.user ?? null);
+      if (session?.user) {
+        checkAdminAndRedirect(session.user.id);
+      }
+    });
+
+    return () => subscription.unsubscribe();
+  }, []);
+
+  const checkAdminAndRedirect = async (userId: string) => {
+    try {
+      const { data, error } = await supabase
+        .from('user_roles')
+        .select('role')
+        .eq('user_id', userId)
+        .eq('role', 'admin')
+        .maybeSingle();
+      
+      if (data) {
+        navigate('/admin/dashboard');
+      }
+    } catch (error) {
+      console.error('Error checking admin role:', error);
+    }
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -29,21 +75,59 @@ export default function AdminLogin() {
 
     const result = loginSchema.safeParse(formData);
     if (!result.success) {
-      setError('Please fill in all fields');
+      setError(result.error.errors[0].message);
       setIsLoading(false);
       return;
     }
 
-    // Simulate API delay
-    await new Promise(resolve => setTimeout(resolve, 800));
+    try {
+      if (isSignUp) {
+        const { data, error } = await supabase.auth.signUp({
+          email: formData.email,
+          password: formData.password,
+          options: {
+            emailRedirectTo: `${window.location.origin}/admin/dashboard`,
+          },
+        });
 
-    // Validate credentials
-    if (formData.username === ADMIN_USERNAME && formData.password === ADMIN_PASSWORD) {
-      // Store admin session
-      sessionStorage.setItem('adminAuthenticated', 'true');
-      navigate('/admin/dashboard');
-    } else {
-      setError('Invalid credentials. Please try again.');
+        if (error) throw error;
+
+        if (data.user) {
+          setError('Account created! Please check your email to verify, or wait for admin approval.');
+        }
+      } else {
+        const { data, error } = await supabase.auth.signInWithPassword({
+          email: formData.email,
+          password: formData.password,
+        });
+
+        if (error) throw error;
+
+        if (data.user) {
+          // Check admin role
+          const { data: roleData } = await supabase
+            .from('user_roles')
+            .select('role')
+            .eq('user_id', data.user.id)
+            .eq('role', 'admin')
+            .maybeSingle();
+
+          if (roleData) {
+            navigate('/admin/dashboard');
+          } else {
+            setError('You do not have admin privileges. Please contact the administrator.');
+            await supabase.auth.signOut();
+          }
+        }
+      }
+    } catch (error: any) {
+      if (error.message.includes('Invalid login credentials')) {
+        setError('Invalid email or password. Please try again.');
+      } else if (error.message.includes('User already registered')) {
+        setError('This email is already registered. Please sign in instead.');
+      } else {
+        setError(error.message || 'An error occurred. Please try again.');
+      }
     }
 
     setIsLoading(false);
@@ -86,10 +170,10 @@ export default function AdminLogin() {
               <Shield className="w-8 h-8 text-primary" />
             </motion.div>
             <h1 className="text-2xl font-display font-bold text-foreground mb-2">
-              Admin Login
+              Admin {isSignUp ? 'Sign Up' : 'Login'}
             </h1>
             <p className="text-muted-foreground">
-              Access the administration panel
+              {isSignUp ? 'Create an admin account' : 'Access the administration panel'}
             </p>
           </div>
 
@@ -102,16 +186,16 @@ export default function AdminLogin() {
           >
             <div className="space-y-5">
               <div className="space-y-2">
-                <Label htmlFor="username" className="flex items-center gap-2">
-                  <User className="w-4 h-4 text-muted-foreground" />
-                  Username
+                <Label htmlFor="email" className="flex items-center gap-2">
+                  <Mail className="w-4 h-4 text-muted-foreground" />
+                  Email
                 </Label>
                 <Input
-                  id="username"
-                  type="text"
-                  placeholder="Enter admin username"
-                  value={formData.username}
-                  onChange={(e) => setFormData(prev => ({ ...prev, username: e.target.value }))}
+                  id="email"
+                  type="email"
+                  placeholder="Enter admin email"
+                  value={formData.email}
+                  onChange={(e) => setFormData(prev => ({ ...prev, email: e.target.value }))}
                 />
               </div>
 
@@ -123,7 +207,7 @@ export default function AdminLogin() {
                 <Input
                   id="password"
                   type="password"
-                  placeholder="Enter admin password"
+                  placeholder="Enter password"
                   value={formData.password}
                   onChange={(e) => setFormData(prev => ({ ...prev, password: e.target.value }))}
                 />
@@ -157,16 +241,38 @@ export default function AdminLogin() {
                     animate={{ rotate: 360 }}
                     transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
                   />
-                  Signing in...
+                  {isSignUp ? 'Creating Account...' : 'Signing in...'}
                 </>
               ) : (
                 <>
                   <Lock className="w-4 h-4" />
-                  Sign In
+                  {isSignUp ? 'Create Account' : 'Sign In'}
                 </>
               )}
             </Button>
+
+            <div className="mt-4 text-center">
+              <button
+                type="button"
+                onClick={() => {
+                  setIsSignUp(!isSignUp);
+                  setError(null);
+                }}
+                className="text-sm text-muted-foreground hover:text-foreground transition-colors"
+              >
+                {isSignUp ? 'Already have an account? Sign in' : "Don't have an account? Sign up"}
+              </button>
+            </div>
           </motion.form>
+
+          <motion.p
+            className="text-center text-xs text-muted-foreground mt-6"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={{ delay: 0.5 }}
+          >
+            Note: Admin privileges must be granted by a database administrator.
+          </motion.p>
         </motion.div>
       </main>
     </div>

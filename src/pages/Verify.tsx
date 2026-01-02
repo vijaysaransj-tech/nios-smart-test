@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { GraduationCap, ArrowLeft, User, Mail, Phone, AlertCircle, CheckCircle } from 'lucide-react';
-import { findCandidate, updateCandidateStatus, createTestAttempt, getTestSettings } from '@/lib/store';
+import { useFindCandidate, useUpdateCandidateStatus, useCreateTestAttempt, useTestSettings, useTestQuestions } from '@/hooks/useDatabase';
 
 const verifySchema = z.object({
   fullName: z.string().trim().min(2, 'Name must be at least 2 characters').max(100, 'Name is too long'),
@@ -26,6 +26,12 @@ export default function Verify() {
   const [errors, setErrors] = useState<Partial<Record<keyof VerifyFormData, string>>>({});
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [isVerifying, setIsVerifying] = useState(false);
+
+  const { data: testSettings, isLoading: isLoadingSettings } = useTestSettings();
+  const { data: questions, isLoading: isLoadingQuestions } = useTestQuestions();
+  const findCandidate = useFindCandidate();
+  const updateCandidateStatus = useUpdateCandidateStatus();
+  const createTestAttempt = useCreateTestAttempt();
 
   const handleInputChange = (field: keyof VerifyFormData, value: string) => {
     setFormData(prev => ({ ...prev, [field]: value }));
@@ -52,38 +58,72 @@ export default function Verify() {
     }
 
     // Check if test is enabled
-    const settings = getTestSettings();
-    if (!settings.isTestEnabled) {
+    if (!testSettings?.is_test_enabled) {
       setSubmitError('The admission test is currently not available. Please try again later.');
       setIsVerifying(false);
       return;
     }
 
-    // Simulate API delay
-    await new Promise(resolve => setTimeout(resolve, 1000));
+    try {
+      // Find candidate
+      const candidate = await findCandidate.mutateAsync({
+        fullName: formData.fullName,
+        email: formData.email,
+        phone: formData.phone,
+      });
 
-    // Find candidate
-    const candidate = findCandidate(formData.fullName, formData.email, formData.phone);
+      if (!candidate) {
+        setSubmitError('You are not authorized to take the NIOS Admission Test. Please contact the administration.');
+        setIsVerifying(false);
+        return;
+      }
 
-    if (!candidate) {
-      setSubmitError('You are not authorized to take the NIOS Admission Test. Please contact the administration.');
+      if (candidate.test_status === 'ATTEMPTED') {
+        setSubmitError('You have already completed this test. Each candidate can only attempt the test once.');
+        setIsVerifying(false);
+        return;
+      }
+
+      // Create test attempt
+      const attempt = await createTestAttempt.mutateAsync({
+        candidateId: candidate.id,
+        totalQuestions: questions?.length || 0,
+      });
+
+      // Update candidate status
+      await updateCandidateStatus.mutateAsync({
+        id: candidate.id,
+        status: 'ATTEMPTED',
+      });
+
+      // Navigate to test with attempt info
+      navigate('/test', { 
+        state: { 
+          attemptId: attempt.id, 
+          candidateId: candidate.id, 
+          candidateName: candidate.full_name 
+        } 
+      });
+    } catch (error) {
+      setSubmitError('An error occurred. Please try again.');
       setIsVerifying(false);
-      return;
     }
-
-    if (candidate.testStatus === 'ATTEMPTED') {
-      setSubmitError('You have already completed this test. Each candidate can only attempt the test once.');
-      setIsVerifying(false);
-      return;
-    }
-
-    // Create test attempt and start test
-    const attempt = createTestAttempt(candidate.id);
-    updateCandidateStatus(candidate.id, 'ATTEMPTED');
-
-    // Navigate to test with attempt info
-    navigate('/test', { state: { attemptId: attempt.id, candidateId: candidate.id, candidateName: candidate.fullName } });
   };
+
+  if (isLoadingSettings || isLoadingQuestions) {
+    return (
+      <div className="min-h-screen bg-background flex items-center justify-center">
+        <div className="text-center">
+          <motion.div
+            className="w-12 h-12 border-4 border-primary/30 border-t-primary rounded-full mx-auto mb-4"
+            animate={{ rotate: 360 }}
+            transition={{ duration: 1, repeat: Infinity, ease: "linear" }}
+          />
+          <p className="text-muted-foreground">Loading...</p>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-background flex flex-col">

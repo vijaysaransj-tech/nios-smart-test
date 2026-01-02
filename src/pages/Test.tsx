@@ -5,8 +5,7 @@ import { GraduationCap } from 'lucide-react';
 import { QuestionCard } from '@/components/QuestionCard';
 import { TestTimer } from '@/components/TestTimer';
 import { ProgressBar } from '@/components/ProgressBar';
-import { getTestQuestions, saveQuestionResponse, completeTestAttempt, getResponsesByAttempt, getSections } from '@/lib/store';
-import { QuestionWithSection } from '@/lib/types';
+import { useTestQuestions, useSaveQuestionResponse, useCompleteTestAttempt, useSections, Question } from '@/hooks/useDatabase';
 
 interface LocationState {
   attemptId: string;
@@ -14,94 +13,113 @@ interface LocationState {
   candidateName: string;
 }
 
+interface QuestionWithSection extends Question {
+  section_name: string;
+}
+
 export default function Test() {
   const navigate = useNavigate();
   const location = useLocation();
   const state = location.state as LocationState;
 
-  const [questions, setQuestions] = useState<QuestionWithSection[]>([]);
   const [currentIndex, setCurrentIndex] = useState(0);
   const [selectedAnswer, setSelectedAnswer] = useState<'A' | 'B' | 'C' | 'D' | undefined>();
   const [startTime, setStartTime] = useState<number>(Date.now());
   const [isTransitioning, setIsTransitioning] = useState(false);
+  const [responses, setResponses] = useState<Array<{ questionId: string; isCorrect: boolean }>>([]);
+
+  const { data: questions, isLoading } = useTestQuestions();
+  const { data: sections } = useSections();
+  const saveQuestionResponse = useSaveQuestionResponse();
+  const completeTestAttempt = useCompleteTestAttempt();
 
   useEffect(() => {
     if (!state?.attemptId) {
       navigate('/');
       return;
     }
-
-    const allQuestions = getTestQuestions();
-    const questionsWithNumbers = allQuestions.map((q, index) => ({
-      ...q,
-      questionNumber: index + 1,
-      totalQuestions: allQuestions.length,
-    }));
-    setQuestions(questionsWithNumbers);
     setStartTime(Date.now());
   }, [state, navigate]);
 
-  const currentQuestion = questions[currentIndex];
+  const currentQuestion = questions?.[currentIndex] as QuestionWithSection | undefined;
 
-  const moveToNextQuestion = useCallback(() => {
-    if (isTransitioning) return;
+  const moveToNextQuestion = useCallback(async () => {
+    if (isTransitioning || !currentQuestion || !questions) return;
     
     const timeTaken = Math.round((Date.now() - startTime) / 1000);
+    const isCorrect = selectedAnswer === currentQuestion.correct_answer;
 
-    // Save response
-    if (currentQuestion) {
-      saveQuestionResponse({
-        attemptId: state.attemptId,
-        questionId: currentQuestion.id,
-        selectedAnswer: selectedAnswer,
-        isCorrect: selectedAnswer === currentQuestion.correctAnswer,
-        timeTaken,
+    // Save response to database
+    try {
+      await saveQuestionResponse.mutateAsync({
+        attempt_id: state.attemptId,
+        question_id: currentQuestion.id,
+        selected_answer: selectedAnswer || null,
+        is_correct: isCorrect,
+        time_taken: timeTaken,
       });
+
+      // Track response locally for final calculation
+      setResponses(prev => [...prev, { questionId: currentQuestion.id, isCorrect }]);
+
+      if (currentIndex < questions.length - 1) {
+        setIsTransitioning(true);
+        setTimeout(() => {
+          setCurrentIndex(prev => prev + 1);
+          setSelectedAnswer(undefined);
+          setStartTime(Date.now());
+          setIsTransitioning(false);
+        }, 300);
+      } else {
+        // Test completed - calculate final scores
+        finishTest([...responses, { questionId: currentQuestion.id, isCorrect }]);
+      }
+    } catch (error) {
+      console.error('Failed to save response:', error);
     }
+  }, [currentIndex, questions, selectedAnswer, currentQuestion, startTime, state?.attemptId, isTransitioning, responses]);
 
-    if (currentIndex < questions.length - 1) {
-      setIsTransitioning(true);
-      setTimeout(() => {
-        setCurrentIndex(prev => prev + 1);
-        setSelectedAnswer(undefined);
-        setStartTime(Date.now());
-        setIsTransitioning(false);
-      }, 300);
-    } else {
-      // Test completed
-      finishTest();
+  const finishTest = async (allResponses: Array<{ questionId: string; isCorrect: boolean }>) => {
+    if (!questions || !sections) return;
+
+    const correctAnswers = allResponses.filter(r => r.isCorrect).length;
+    const incorrectAnswers = allResponses.filter(r => !r.isCorrect).length;
+
+    try {
+      const attempt = await completeTestAttempt.mutateAsync({
+        attemptId: state.attemptId,
+        correctAnswers,
+        incorrectAnswers,
+        totalQuestions: questions.length,
+      });
+
+      // Calculate section-wise scores
+      const sectionScores = sections.map(section => {
+        const sectionQuestions = questions.filter(q => q.section_id === section.id);
+        const sectionResponses = allResponses.filter(r => 
+          sectionQuestions.some(sq => sq.id === r.questionId)
+        );
+        const correct = sectionResponses.filter(r => r.isCorrect).length;
+        return {
+          sectionName: section.name,
+          total: sectionQuestions.length,
+          correct,
+        };
+      });
+
+      navigate('/result', { 
+        state: { 
+          attempt: {
+            ...attempt,
+            totalQuestions: questions.length,
+          },
+          sectionScores,
+          candidateName: state.candidateName,
+        } 
+      });
+    } catch (error) {
+      console.error('Failed to complete test:', error);
     }
-  }, [currentIndex, questions.length, selectedAnswer, currentQuestion, startTime, state?.attemptId, isTransitioning]);
-
-  const finishTest = () => {
-    const responses = getResponsesByAttempt(state.attemptId);
-    const correctAnswers = responses.filter(r => r.isCorrect).length;
-    const incorrectAnswers = responses.filter(r => !r.isCorrect).length;
-
-    const attempt = completeTestAttempt(state.attemptId, { correctAnswers, incorrectAnswers });
-
-    // Calculate section-wise scores
-    const sections = getSections();
-    const sectionScores = sections.map(section => {
-      const sectionQuestions = questions.filter(q => q.sectionId === section.id);
-      const sectionResponses = responses.filter(r => 
-        sectionQuestions.some(sq => sq.id === r.questionId)
-      );
-      const correct = sectionResponses.filter(r => r.isCorrect).length;
-      return {
-        sectionName: section.name,
-        total: sectionQuestions.length,
-        correct,
-      };
-    });
-
-    navigate('/result', { 
-      state: { 
-        attempt,
-        sectionScores,
-        candidateName: state.candidateName,
-      } 
-    });
   };
 
   const handleSelectAnswer = (answer: 'A' | 'B' | 'C' | 'D') => {
@@ -117,7 +135,7 @@ export default function Test() {
     moveToNextQuestion();
   }, [moveToNextQuestion]);
 
-  if (!currentQuestion) {
+  if (isLoading || !currentQuestion) {
     return (
       <div className="min-h-screen bg-background flex items-center justify-center">
         <div className="text-center">
@@ -131,6 +149,23 @@ export default function Test() {
       </div>
     );
   }
+
+  // Transform question for QuestionCard component
+  const questionForCard = {
+    id: currentQuestion.id,
+    sectionId: currentQuestion.section_id,
+    questionText: currentQuestion.question_text,
+    optionA: currentQuestion.option_a,
+    optionB: currentQuestion.option_b,
+    optionC: currentQuestion.option_c,
+    optionD: currentQuestion.option_d,
+    correctAnswer: currentQuestion.correct_answer as 'A' | 'B' | 'C' | 'D',
+    timeLimit: currentQuestion.time_limit,
+    createdAt: new Date(currentQuestion.created_at),
+    sectionName: currentQuestion.section_name,
+    questionNumber: currentIndex + 1,
+    totalQuestions: questions?.length || 0,
+  };
 
   return (
     <div className="min-h-screen bg-background flex flex-col">
@@ -150,7 +185,7 @@ export default function Test() {
       {/* Progress */}
       <div className="bg-card border-b border-border">
         <div className="container mx-auto px-4 py-4">
-          <ProgressBar current={currentIndex + 1} total={questions.length} />
+          <ProgressBar current={currentIndex + 1} total={questions?.length || 0} />
         </div>
       </div>
 
@@ -166,7 +201,7 @@ export default function Test() {
             >
               <TestTimer
                 key={currentQuestion.id}
-                timeLimit={currentQuestion.timeLimit}
+                timeLimit={currentQuestion.time_limit}
                 onTimeUp={handleTimeUp}
                 isPaused={isTransitioning}
               />
@@ -177,7 +212,7 @@ export default function Test() {
           <AnimatePresence mode="wait">
             <QuestionCard
               key={currentQuestion.id}
-              question={currentQuestion}
+              question={questionForCard}
               selectedAnswer={selectedAnswer}
               onSelectAnswer={handleSelectAnswer}
             />
