@@ -1,11 +1,11 @@
 import { useState, useEffect, useCallback } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useNavigate, useLocation } from 'react-router-dom';
-import { GraduationCap } from 'lucide-react';
 import { QuestionCard } from '@/components/QuestionCard';
 import { TestTimer } from '@/components/TestTimer';
 import { ProgressBar } from '@/components/ProgressBar';
 import { useTestQuestions, useSaveQuestionResponse, useCompleteTestAttempt, useSections, Question } from '@/hooks/useDatabase';
+import logo from '@/assets/logo.webp';
 
 interface LocationState {
   attemptId: string;
@@ -17,6 +17,13 @@ interface QuestionWithSection extends Question {
   section_name: string;
 }
 
+interface ResponseData {
+  questionId: string;
+  isCorrect: boolean;
+  selectedAnswer: string | null;
+  timeTaken: number;
+}
+
 export default function Test() {
   const navigate = useNavigate();
   const location = useLocation();
@@ -26,7 +33,7 @@ export default function Test() {
   const [selectedAnswer, setSelectedAnswer] = useState<'A' | 'B' | 'C' | 'D' | undefined>();
   const [startTime, setStartTime] = useState<number>(Date.now());
   const [isTransitioning, setIsTransitioning] = useState(false);
-  const [responses, setResponses] = useState<Array<{ questionId: string; isCorrect: boolean }>>([]);
+  const [responses, setResponses] = useState<ResponseData[]>([]);
 
   const { data: questions, isLoading } = useTestQuestions();
   const { data: sections } = useSections();
@@ -59,8 +66,15 @@ export default function Test() {
         time_taken: timeTaken,
       });
 
-      // Track response locally for final calculation
-      setResponses(prev => [...prev, { questionId: currentQuestion.id, isCorrect }]);
+      // Track response locally for final calculation with more details
+      const newResponse: ResponseData = {
+        questionId: currentQuestion.id,
+        isCorrect,
+        selectedAnswer: selectedAnswer || null,
+        timeTaken,
+      };
+      
+      setResponses(prev => [...prev, newResponse]);
 
       if (currentIndex < questions.length - 1) {
         setIsTransitioning(true);
@@ -72,14 +86,14 @@ export default function Test() {
         }, 300);
       } else {
         // Test completed - calculate final scores
-        finishTest([...responses, { questionId: currentQuestion.id, isCorrect }]);
+        finishTest([...responses, newResponse]);
       }
     } catch (error) {
       console.error('Failed to save response:', error);
     }
   }, [currentIndex, questions, selectedAnswer, currentQuestion, startTime, state?.attemptId, isTransitioning, responses]);
 
-  const finishTest = async (allResponses: Array<{ questionId: string; isCorrect: boolean }>) => {
+  const finishTest = async (allResponses: ResponseData[]) => {
     if (!questions || !sections) return;
 
     const correctAnswers = allResponses.filter(r => r.isCorrect).length;
@@ -107,14 +121,35 @@ export default function Test() {
         };
       });
 
+      // Build detailed question data for results page
+      const detailedQuestions = questions.map(q => {
+        const response = allResponses.find(r => r.questionId === q.id);
+        return {
+          id: q.id,
+          question_text: q.question_text,
+          option_a: q.option_a,
+          option_b: q.option_b,
+          option_c: q.option_c,
+          option_d: q.option_d,
+          correct_answer: q.correct_answer,
+          section_name: (q as QuestionWithSection).section_name,
+          selected_answer: response?.selectedAnswer || null,
+          is_correct: response?.isCorrect || false,
+          time_taken: response?.timeTaken || 0,
+        };
+      });
+
       navigate('/result', { 
         state: { 
           attempt: {
             ...attempt,
             totalQuestions: questions.length,
+            correctAnswers,
+            incorrectAnswers,
           },
           sectionScores,
           candidateName: state.candidateName,
+          detailedQuestions,
         } 
       });
     } catch (error) {
@@ -171,11 +206,8 @@ export default function Test() {
     <div className="min-h-screen bg-background flex flex-col">
       {/* Header */}
       <header className="border-b border-border bg-card/50 backdrop-blur-sm sticky top-0 z-10">
-        <div className="container mx-auto px-4 py-4 flex items-center justify-between">
-          <div className="flex items-center gap-2">
-            <GraduationCap className="w-5 h-5 text-primary" />
-            <span className="font-display font-semibold text-primary">ThinkerzHub</span>
-          </div>
+        <div className="container mx-auto px-4 py-3 flex items-center justify-between">
+          <img src={logo} alt="ThinkerZ Hub" className="h-10 object-contain" />
           <div className="text-sm text-muted-foreground">
             {state?.candidateName}
           </div>
