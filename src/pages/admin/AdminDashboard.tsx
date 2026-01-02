@@ -3,21 +3,33 @@ import { motion } from 'framer-motion';
 import { useNavigate } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
 import { 
-  GraduationCap, LayoutDashboard, BookOpen, HelpCircle, Users, Settings, LogOut,
-  Plus, Trash2, FileText, ClipboardCheck
+  LayoutDashboard, BookOpen, HelpCircle, Users, Settings, LogOut,
+  Plus, Trash2, FileText, ClipboardCheck, Eye, X
 } from 'lucide-react';
 import { 
   useSections, useQuestions, useCandidates, useTestAttempts, useTestSettings,
   useAddSection, useDeleteSection, useAddQuestion, useDeleteQuestion, 
-  useAddCandidate, useDeleteCandidate, useUpdateTestSettings
+  useAddCandidate, useDeleteCandidate, useUpdateTestSettings, useQuestionResponses
 } from '@/hooks/useDatabase';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
 import { supabase } from '@/integrations/supabase/client';
 import { User, Session } from '@supabase/supabase-js';
+import { DetailedResults } from '@/components/DetailedResults';
+import logo from '@/assets/logo.webp';
 
 type Tab = 'overview' | 'sections' | 'questions' | 'candidates' | 'results' | 'settings';
+
+interface SelectedAttempt {
+  id: string;
+  candidateName: string;
+  candidateId: string;
+  totalScore: number;
+  correctAnswers: number;
+  incorrectAnswers: number;
+  totalQuestions: number;
+}
 
 export default function AdminDashboard() {
   const navigate = useNavigate();
@@ -26,6 +38,7 @@ export default function AdminDashboard() {
   const [session, setSession] = useState<Session | null>(null);
   const [isAdmin, setIsAdmin] = useState(false);
   const [isCheckingAuth, setIsCheckingAuth] = useState(true);
+  const [selectedAttempt, setSelectedAttempt] = useState<SelectedAttempt | null>(null);
 
   // Form states
   const [newSection, setNewSection] = useState({ name: '', description: '' });
@@ -45,6 +58,7 @@ export default function AdminDashboard() {
   const { data: candidates = [], isLoading: isLoadingCandidates } = useCandidates();
   const { data: attempts = [], isLoading: isLoadingAttempts } = useTestAttempts();
   const { data: testSettings, isLoading: isLoadingSettings } = useTestSettings();
+  const { data: attemptResponses = [] } = useQuestionResponses(selectedAttempt?.id || '');
 
   const addSection = useAddSection();
   const deleteSection = useDeleteSection();
@@ -180,6 +194,43 @@ export default function AdminDashboard() {
     updateTestSettings.mutate({ isTestEnabled: enabled });
   };
 
+  const handleViewAttempt = (attemptId: string) => {
+    const attempt = attempts.find(a => a.id === attemptId);
+    const candidate = candidates.find(c => c.id === attempt?.candidate_id);
+    if (attempt && candidate) {
+      setSelectedAttempt({
+        id: attempt.id,
+        candidateName: candidate.full_name,
+        candidateId: candidate.id,
+        totalScore: attempt.total_score,
+        correctAnswers: attempt.correct_answers,
+        incorrectAnswers: attempt.incorrect_answers,
+        totalQuestions: attempt.total_questions,
+      });
+    }
+  };
+
+  // Build detailed questions for the modal
+  const detailedQuestionsForModal = selectedAttempt && attemptResponses.length > 0
+    ? attemptResponses.map(response => {
+        const question = questions.find(q => q.id === response.question_id);
+        const section = sections.find(s => s.id === question?.section_id);
+        return {
+          id: response.question_id,
+          question_text: question?.question_text || '',
+          option_a: question?.option_a || '',
+          option_b: question?.option_b || '',
+          option_c: question?.option_c || '',
+          option_d: question?.option_d || '',
+          correct_answer: question?.correct_answer || '',
+          section_name: section?.name || 'Unknown Section',
+          selected_answer: response.selected_answer,
+          is_correct: response.is_correct,
+          time_taken: response.time_taken,
+        };
+      })
+    : [];
+
   const navItems = [
     { id: 'overview' as Tab, label: 'Overview', icon: LayoutDashboard },
     { id: 'sections' as Tab, label: 'Sections', icon: BookOpen },
@@ -242,10 +293,7 @@ export default function AdminDashboard() {
       {/* Sidebar */}
       <aside className="w-64 bg-card border-r border-border flex flex-col">
         <div className="p-4 border-b border-border">
-          <div className="flex items-center gap-2">
-            <GraduationCap className="w-6 h-6 text-primary" />
-            <span className="font-display font-bold text-primary">ThinkerzHub</span>
-          </div>
+          <img src={logo} alt="ThinkerZ Hub" className="h-12 object-contain" />
           <p className="text-xs text-muted-foreground mt-1">Admin Panel</p>
         </div>
 
@@ -579,13 +627,18 @@ export default function AdminDashboard() {
                         <th className="px-6 py-3 text-left text-xs font-medium text-muted-foreground uppercase">Correct</th>
                         <th className="px-6 py-3 text-left text-xs font-medium text-muted-foreground uppercase">Incorrect</th>
                         <th className="px-6 py-3 text-left text-xs font-medium text-muted-foreground uppercase">Date</th>
+                        <th className="px-6 py-3 text-right text-xs font-medium text-muted-foreground uppercase">Actions</th>
                       </tr>
                     </thead>
                     <tbody className="divide-y divide-border">
                       {attempts.map((a) => {
                         const candidate = candidates.find(c => c.id === a.candidate_id);
                         return (
-                          <tr key={a.id}>
+                          <tr 
+                            key={a.id} 
+                            className="hover:bg-muted/50 cursor-pointer transition-colors"
+                            onClick={() => handleViewAttempt(a.id)}
+                          >
                             <td className="px-6 py-4 font-medium text-foreground">{candidate?.full_name || 'Unknown'}</td>
                             <td className="px-6 py-4">
                               <span className="font-bold text-primary">{a.total_score}%</span>
@@ -595,12 +648,20 @@ export default function AdminDashboard() {
                             <td className="px-6 py-4 text-muted-foreground">
                               {a.completed_at ? new Date(a.completed_at).toLocaleDateString() : '-'}
                             </td>
+                            <td className="px-6 py-4 text-right">
+                              <Button variant="ghost" size="sm" onClick={(e) => {
+                                e.stopPropagation();
+                                handleViewAttempt(a.id);
+                              }}>
+                                <Eye className="w-4 h-4 text-primary" />
+                              </Button>
+                            </td>
                           </tr>
                         );
                       })}
                       {attempts.length === 0 && (
                         <tr>
-                          <td colSpan={5} className="px-6 py-8 text-center text-muted-foreground">
+                          <td colSpan={6} className="px-6 py-8 text-center text-muted-foreground">
                             No test attempts yet
                           </td>
                         </tr>
@@ -636,6 +697,43 @@ export default function AdminDashboard() {
           </>
         )}
       </main>
+
+      {/* Detailed Results Modal */}
+      {selectedAttempt && (
+        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+          <motion.div 
+            className="bg-card rounded-2xl shadow-xl border border-border w-full max-w-4xl max-h-[90vh] overflow-hidden flex flex-col"
+            initial={{ opacity: 0, scale: 0.95 }}
+            animate={{ opacity: 1, scale: 1 }}
+          >
+            {/* Modal Header */}
+            <div className="flex items-center justify-between p-6 border-b border-border">
+              <div>
+                <h2 className="text-xl font-display font-bold text-foreground">
+                  {selectedAttempt.candidateName}'s Results
+                </h2>
+                <p className="text-sm text-muted-foreground">
+                  Score: {selectedAttempt.totalScore}% • {selectedAttempt.correctAnswers}/{selectedAttempt.totalQuestions} correct
+                </p>
+              </div>
+              <Button variant="ghost" size="sm" onClick={() => setSelectedAttempt(null)}>
+                <X className="w-5 h-5" />
+              </Button>
+            </div>
+
+            {/* Modal Content */}
+            <div className="flex-1 overflow-auto p-6">
+              {detailedQuestionsForModal.length > 0 ? (
+                <DetailedResults questions={detailedQuestionsForModal} />
+              ) : (
+                <div className="text-center py-8 text-muted-foreground">
+                  <p>Loading question details...</p>
+                </div>
+              )}
+            </div>
+          </motion.div>
+        </div>
+      )}
     </div>
   );
 }

@@ -1,8 +1,9 @@
 import { motion } from 'framer-motion';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { Button } from '@/components/ui/button';
-import { GraduationCap, Trophy, CheckCircle, XCircle, Target, Home, Award, Star } from 'lucide-react';
-import { TestAttempt } from '@/lib/types';
+import { Trophy, CheckCircle, XCircle, Target, Home, Award, Star } from 'lucide-react';
+import { DetailedResults } from '@/components/DetailedResults';
+import logo from '@/assets/logo.webp';
 
 interface SectionScore {
   sectionName: string;
@@ -10,10 +11,31 @@ interface SectionScore {
   correct: number;
 }
 
+interface QuestionDetail {
+  id: string;
+  question_text: string;
+  option_a: string;
+  option_b: string;
+  option_c: string;
+  option_d: string;
+  correct_answer: string;
+  section_name: string;
+  selected_answer: string | null;
+  is_correct: boolean;
+  time_taken: number;
+}
+
 interface LocationState {
-  attempt: TestAttempt;
+  attempt: {
+    id: string;
+    totalQuestions: number;
+    correctAnswers: number;
+    incorrectAnswers: number;
+    total_score: number;
+  };
   sectionScores: SectionScore[];
   candidateName: string;
+  detailedQuestions: QuestionDetail[];
 }
 
 export default function Result() {
@@ -26,7 +48,7 @@ export default function Result() {
     return null;
   }
 
-  const { attempt, sectionScores, candidateName } = state;
+  const { attempt, sectionScores, candidateName, detailedQuestions } = state;
   const percentage = Math.round((attempt.correctAnswers / attempt.totalQuestions) * 100);
 
   const getBadge = () => {
@@ -44,16 +66,13 @@ export default function Result() {
       {/* Header */}
       <header className="border-b border-border bg-card/50 backdrop-blur-sm">
         <div className="container mx-auto px-4 py-4 flex items-center justify-center">
-          <div className="flex items-center gap-2">
-            <GraduationCap className="w-5 h-5 text-primary" />
-            <span className="font-display font-semibold text-primary">ThinkerzHub</span>
-          </div>
+          <img src={logo} alt="ThinkerZ Hub" className="h-12 object-contain" />
         </div>
       </header>
 
       {/* Main Content */}
       <main className="container mx-auto px-4 py-12">
-        <div className="max-w-2xl mx-auto">
+        <div className="max-w-4xl mx-auto">
           {/* Success Animation */}
           <motion.div
             className="text-center mb-8"
@@ -239,6 +258,18 @@ export default function Result() {
               })}
             </div>
           </motion.div>
+
+          {/* Detailed Question Review */}
+          {detailedQuestions && detailedQuestions.length > 0 && (
+            <motion.div
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 1.3 }}
+              className="mb-8"
+            >
+              <DetailedResults questions={detailedQuestions} />
+            </motion.div>
+          )}
 
           {/* Action Button */}
           <motion.div
