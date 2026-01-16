@@ -184,18 +184,27 @@ export function useCandidates() {
   });
 }
 
+export interface VerifyCandidateResult {
+  found: boolean;
+  candidateId?: string;
+  candidateName?: string;
+  testStatus?: 'NOT_ATTEMPTED' | 'ATTEMPTED';
+  message?: string;
+}
+
 export function useFindCandidate() {
   return useMutation({
-    mutationFn: async ({ fullName, email, phone }: { fullName: string; email: string; phone: string }) => {
-      const { data, error } = await supabase
-        .from('candidates')
-        .select('*')
-        .ilike('full_name', fullName.trim())
-        .ilike('email', email.trim())
-        .eq('phone', phone.trim())
-        .maybeSingle();
-      if (error) throw error;
-      return data as Candidate | null;
+    mutationFn: async ({ fullName, email, phone }: { fullName: string; email: string; phone: string }): Promise<VerifyCandidateResult> => {
+      const { data, error } = await supabase.functions.invoke('verify-candidate', {
+        body: { fullName, email, phone }
+      });
+      
+      if (error) {
+        console.error('Verification error:', error);
+        throw new Error('Verification failed. Please try again.');
+      }
+      
+      return data as VerifyCandidateResult;
     },
   });
 }
