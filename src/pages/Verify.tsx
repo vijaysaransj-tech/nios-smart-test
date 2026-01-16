@@ -65,20 +65,20 @@ export default function Verify() {
     }
 
     try {
-      // Find candidate
-      const candidate = await findCandidate.mutateAsync({
+      // Find candidate using secure edge function
+      const result = await findCandidate.mutateAsync({
         fullName: formData.fullName,
         email: formData.email,
         phone: formData.phone,
       });
 
-      if (!candidate) {
-        setSubmitError('You are not authorized to take the NIOS Admission Test. Please contact the administration.');
+      if (!result.found) {
+        setSubmitError(result.message || 'You are not authorized to take the NIOS Admission Test. Please contact the administration.');
         setIsVerifying(false);
         return;
       }
 
-      if (candidate.test_status === 'ATTEMPTED') {
+      if (result.testStatus === 'ATTEMPTED') {
         setSubmitError('You have already completed this test. Each candidate can only attempt the test once.');
         setIsVerifying(false);
         return;
@@ -86,13 +86,13 @@ export default function Verify() {
 
       // Create test attempt
       const attempt = await createTestAttempt.mutateAsync({
-        candidateId: candidate.id,
+        candidateId: result.candidateId!,
         totalQuestions: questions?.length || 0,
       });
 
       // Update candidate status
       await updateCandidateStatus.mutateAsync({
-        id: candidate.id,
+        id: result.candidateId!,
         status: 'ATTEMPTED',
       });
 
@@ -100,8 +100,8 @@ export default function Verify() {
       navigate('/test', { 
         state: { 
           attemptId: attempt.id, 
-          candidateId: candidate.id, 
-          candidateName: candidate.full_name 
+          candidateId: result.candidateId, 
+          candidateName: result.candidateName 
         } 
       });
     } catch (error) {
