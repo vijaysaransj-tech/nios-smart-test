@@ -16,16 +16,12 @@ interface SaveResponseRequest {
   attemptId: string
   questionId: string
   selectedAnswer: string | null
-  isCorrect: boolean
   timeTaken: number
 }
 
 interface CompleteAttemptRequest {
   action: 'complete_attempt'
   attemptId: string
-  correctAnswers: number
-  incorrectAnswers: number
-  totalQuestions: number
 }
 
 interface GetAttemptRequest {
@@ -38,7 +34,12 @@ interface GetResponsesRequest {
   attemptId: string
 }
 
-type RequestBody = CreateAttemptRequest | SaveResponseRequest | CompleteAttemptRequest | GetAttemptRequest | GetResponsesRequest
+interface GetResultsRequest {
+  action: 'get_results'
+  attemptId: string
+}
+
+type RequestBody = CreateAttemptRequest | SaveResponseRequest | CompleteAttemptRequest | GetAttemptRequest | GetResponsesRequest | GetResultsRequest
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
@@ -63,6 +64,8 @@ Deno.serve(async (req) => {
       { auth: { autoRefreshToken: false, persistSession: false } }
     )
 
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
     switch (body.action) {
       case 'create_attempt': {
         const { candidateId, totalQuestions } = body as CreateAttemptRequest
@@ -75,8 +78,6 @@ Deno.serve(async (req) => {
           })
         }
 
-        // Validate UUID format
-        const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
         if (!uuidRegex.test(candidateId)) {
           return new Response(JSON.stringify({ error: 'Invalid candidateId format' }), {
             status: 400,
@@ -134,6 +135,16 @@ Deno.serve(async (req) => {
           })
         }
 
+        // Mark candidate as attempted immediately to prevent multiple attempts
+        const { error: statusError } = await supabaseAdmin
+          .from('candidates')
+          .update({ test_status: 'ATTEMPTED' })
+          .eq('id', candidateId)
+
+        if (statusError) {
+          console.error('Error updating candidate status:', statusError)
+        }
+
         console.log('Test attempt created:', attempt.id)
         return new Response(JSON.stringify(attempt), {
           headers: { ...corsHeaders, 'Content-Type': 'application/json' }
@@ -141,11 +152,9 @@ Deno.serve(async (req) => {
       }
 
       case 'save_response': {
-        const { attemptId, questionId, selectedAnswer, isCorrect, timeTaken } = body as SaveResponseRequest
+        const { attemptId, questionId, selectedAnswer, timeTaken } = body as SaveResponseRequest
 
         // Validate inputs
-        const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-        
         if (!attemptId || !uuidRegex.test(attemptId)) {
           return new Response(JSON.stringify({ error: 'Valid attemptId is required' }), {
             status: 400,
@@ -155,13 +164,6 @@ Deno.serve(async (req) => {
 
         if (!questionId || !uuidRegex.test(questionId)) {
           return new Response(JSON.stringify({ error: 'Valid questionId is required' }), {
-            status: 400,
-            headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-          })
-        }
-
-        if (typeof isCorrect !== 'boolean') {
-          return new Response(JSON.stringify({ error: 'isCorrect must be a boolean' }), {
             status: 400,
             headers: { ...corsHeaders, 'Content-Type': 'application/json' }
           })
@@ -203,6 +205,23 @@ Deno.serve(async (req) => {
           })
         }
 
+        // Get the correct answer from the question (server-side validation)
+        const { data: question, error: questionError } = await supabaseAdmin
+          .from('questions')
+          .select('correct_answer')
+          .eq('id', questionId)
+          .single()
+
+        if (questionError || !question) {
+          return new Response(JSON.stringify({ error: 'Question not found' }), {
+            status: 404,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+          })
+        }
+
+        // Validate answer on server side
+        const isCorrect = selectedAnswer !== null && selectedAnswer === question.correct_answer
+
         // Save response
         const { data: response, error: responseError } = await supabaseAdmin
           .from('question_responses')
@@ -224,40 +243,17 @@ Deno.serve(async (req) => {
           })
         }
 
-        return new Response(JSON.stringify(response), {
+        // Return response with isCorrect for immediate UI feedback
+        return new Response(JSON.stringify({ ...response, is_correct: isCorrect }), {
           headers: { ...corsHeaders, 'Content-Type': 'application/json' }
         })
       }
 
       case 'complete_attempt': {
-        const { attemptId, correctAnswers, incorrectAnswers, totalQuestions } = body as CompleteAttemptRequest
+        const { attemptId } = body as CompleteAttemptRequest
 
-        // Validate inputs
-        const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
-        
         if (!attemptId || !uuidRegex.test(attemptId)) {
           return new Response(JSON.stringify({ error: 'Valid attemptId is required' }), {
-            status: 400,
-            headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-          })
-        }
-
-        if (typeof correctAnswers !== 'number' || correctAnswers < 0) {
-          return new Response(JSON.stringify({ error: 'Valid correctAnswers is required' }), {
-            status: 400,
-            headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-          })
-        }
-
-        if (typeof incorrectAnswers !== 'number' || incorrectAnswers < 0) {
-          return new Response(JSON.stringify({ error: 'Valid incorrectAnswers is required' }), {
-            status: 400,
-            headers: { ...corsHeaders, 'Content-Type': 'application/json' }
-          })
-        }
-
-        if (typeof totalQuestions !== 'number' || totalQuestions < 0) {
-          return new Response(JSON.stringify({ error: 'Valid totalQuestions is required' }), {
             status: 400,
             headers: { ...corsHeaders, 'Content-Type': 'application/json' }
           })
@@ -266,7 +262,7 @@ Deno.serve(async (req) => {
         // Verify attempt exists
         const { data: attempt, error: attemptError } = await supabaseAdmin
           .from('test_attempts')
-          .select('id, candidate_id, completed_at')
+          .select('id, candidate_id, completed_at, total_questions')
           .eq('id', attemptId)
           .single()
 
@@ -284,6 +280,23 @@ Deno.serve(async (req) => {
           })
         }
 
+        // Calculate scores from saved responses (server-side calculation)
+        const { data: responses, error: responsesError } = await supabaseAdmin
+          .from('question_responses')
+          .select('is_correct')
+          .eq('attempt_id', attemptId)
+
+        if (responsesError) {
+          console.error('Error fetching responses:', responsesError)
+          return new Response(JSON.stringify({ error: 'Failed to calculate scores' }), {
+            status: 500,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+          })
+        }
+
+        const correctAnswers = responses?.filter(r => r.is_correct).length || 0
+        const incorrectAnswers = responses?.filter(r => !r.is_correct).length || 0
+        const totalQuestions = attempt.total_questions || responses?.length || 0
         const totalScore = totalQuestions > 0 ? Math.round((correctAnswers / totalQuestions) * 100) : 0
 
         // Update attempt
@@ -307,7 +320,7 @@ Deno.serve(async (req) => {
           })
         }
 
-        // Update candidate status
+        // Ensure candidate status is set
         await supabaseAdmin
           .from('candidates')
           .update({ test_status: 'ATTEMPTED' })
@@ -322,7 +335,6 @@ Deno.serve(async (req) => {
       case 'get_attempt': {
         const { attemptId } = body as GetAttemptRequest
 
-        const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
         if (!attemptId || !uuidRegex.test(attemptId)) {
           return new Response(JSON.stringify({ error: 'Valid attemptId is required' }), {
             status: 400,
@@ -351,7 +363,6 @@ Deno.serve(async (req) => {
       case 'get_responses': {
         const { attemptId } = body as GetResponsesRequest
 
-        const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
         if (!attemptId || !uuidRegex.test(attemptId)) {
           return new Response(JSON.stringify({ error: 'Valid attemptId is required' }), {
             status: 400,
@@ -372,6 +383,117 @@ Deno.serve(async (req) => {
         }
 
         return new Response(JSON.stringify(responses || []), {
+          headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+        })
+      }
+
+      case 'get_results': {
+        // Get full results including correct answers (only after test is complete)
+        const { attemptId } = body as GetResultsRequest
+
+        if (!attemptId || !uuidRegex.test(attemptId)) {
+          return new Response(JSON.stringify({ error: 'Valid attemptId is required' }), {
+            status: 400,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+          })
+        }
+
+        // Verify attempt is completed
+        const { data: attempt, error: attemptError } = await supabaseAdmin
+          .from('test_attempts')
+          .select('*')
+          .eq('id', attemptId)
+          .single()
+
+        if (attemptError || !attempt) {
+          return new Response(JSON.stringify({ error: 'Test attempt not found' }), {
+            status: 404,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+          })
+        }
+
+        if (!attempt.completed_at) {
+          return new Response(JSON.stringify({ error: 'Test is not yet completed' }), {
+            status: 400,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+          })
+        }
+
+        // Get all responses with question details (including correct_answer for review)
+        const { data: responses, error: responsesError } = await supabaseAdmin
+          .from('question_responses')
+          .select('*')
+          .eq('attempt_id', attemptId)
+
+        if (responsesError) {
+          return new Response(JSON.stringify({ error: 'Failed to get responses' }), {
+            status: 500,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+          })
+        }
+
+        // Get all questions with correct answers
+        const { data: questions, error: questionsError } = await supabaseAdmin
+          .from('questions')
+          .select('*, sections(name)')
+
+        if (questionsError) {
+          return new Response(JSON.stringify({ error: 'Failed to get questions' }), {
+            status: 500,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+          })
+        }
+
+        // Build detailed results
+        const detailedQuestions = responses?.map(response => {
+          const question = questions?.find(q => q.id === response.question_id)
+          return {
+            id: response.question_id,
+            question_text: question?.question_text,
+            option_a: question?.option_a,
+            option_b: question?.option_b,
+            option_c: question?.option_c,
+            option_d: question?.option_d,
+            correct_answer: question?.correct_answer,
+            section_name: question?.sections?.name,
+            selected_answer: response.selected_answer,
+            is_correct: response.is_correct,
+            time_taken: response.time_taken,
+          }
+        }) || []
+
+        // Get sections for section-wise scores
+        const { data: sections, error: sectionsError } = await supabaseAdmin
+          .from('sections')
+          .select('*')
+          .order('display_order', { ascending: true })
+
+        if (sectionsError) {
+          return new Response(JSON.stringify({ error: 'Failed to get sections' }), {
+            status: 500,
+            headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+          })
+        }
+
+        // Calculate section-wise scores
+        const sectionScores = sections?.map(section => {
+          const sectionQuestions = questions?.filter(q => q.section_id === section.id) || []
+          const sectionResponses = responses?.filter(r => 
+            sectionQuestions.some(sq => sq.id === r.question_id)
+          ) || []
+          const correct = sectionResponses.filter(r => r.is_correct).length
+          return {
+            sectionName: section.name,
+            total: sectionQuestions.length,
+            correct,
+          }
+        }) || []
+
+        return new Response(JSON.stringify({
+          attempt,
+          detailedQuestions,
+          sectionScores,
+        }), {
           headers: { ...corsHeaders, 'Content-Type': 'application/json' }
         })
       }

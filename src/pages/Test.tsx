@@ -4,17 +4,13 @@ import { useNavigate, useLocation } from 'react-router-dom';
 import { QuestionCard } from '@/components/QuestionCard';
 import { TestTimer } from '@/components/TestTimer';
 import { ProgressBar } from '@/components/ProgressBar';
-import { useTestQuestions, useSaveQuestionResponse, useCompleteTestAttempt, useSections, Question } from '@/hooks/useDatabase';
+import { useTestQuestions, useSaveQuestionResponse, useCompleteTestAttempt, useGetTestResults } from '@/hooks/useDatabase';
 import logo from '@/assets/logo.webp';
 
 interface LocationState {
   attemptId: string;
   candidateId: string;
   candidateName: string;
-}
-
-interface QuestionWithSection extends Question {
-  section_name: string;
 }
 
 interface ResponseData {
@@ -36,9 +32,9 @@ export default function Test() {
   const [responses, setResponses] = useState<ResponseData[]>([]);
 
   const { data: questions, isLoading } = useTestQuestions();
-  const { data: sections } = useSections();
   const saveQuestionResponse = useSaveQuestionResponse();
   const completeTestAttempt = useCompleteTestAttempt();
+  const getTestResults = useGetTestResults();
 
   useEffect(() => {
     if (!state?.attemptId) {
@@ -48,28 +44,26 @@ export default function Test() {
     setStartTime(Date.now());
   }, [state, navigate]);
 
-  const currentQuestion = questions?.[currentIndex] as QuestionWithSection | undefined;
+  const currentQuestion = questions?.[currentIndex];
 
   const moveToNextQuestion = useCallback(async () => {
     if (isTransitioning || !currentQuestion || !questions) return;
     
     const timeTaken = Math.round((Date.now() - startTime) / 1000);
-    const isCorrect = selectedAnswer === currentQuestion.correct_answer;
 
-    // Save response to database
+    // Save response to database - server validates the answer
     try {
-      await saveQuestionResponse.mutateAsync({
+      const response = await saveQuestionResponse.mutateAsync({
         attempt_id: state.attemptId,
         question_id: currentQuestion.id,
         selected_answer: selectedAnswer || null,
-        is_correct: isCorrect,
         time_taken: timeTaken,
       });
 
-      // Track response locally for final calculation with more details
+      // Track response locally using server-validated result
       const newResponse: ResponseData = {
         questionId: currentQuestion.id,
-        isCorrect,
+        isCorrect: response.is_correct,
         selectedAnswer: selectedAnswer || null,
         timeTaken,
       };
@@ -85,71 +79,37 @@ export default function Test() {
           setIsTransitioning(false);
         }, 300);
       } else {
-        // Test completed - calculate final scores
-        finishTest([...responses, newResponse]);
+        // Test completed - fetch results from server
+        finishTest();
       }
     } catch (error) {
       console.error('Failed to save response:', error);
     }
-  }, [currentIndex, questions, selectedAnswer, currentQuestion, startTime, state?.attemptId, isTransitioning, responses]);
+  }, [currentIndex, questions, selectedAnswer, currentQuestion, startTime, state?.attemptId, isTransitioning]);
 
-  const finishTest = async (allResponses: ResponseData[]) => {
-    if (!questions || !sections) return;
-
-    const correctAnswers = allResponses.filter(r => r.isCorrect).length;
-    const incorrectAnswers = allResponses.filter(r => !r.isCorrect).length;
-
+  const finishTest = async () => {
     try {
-      const attempt = await completeTestAttempt.mutateAsync({
+      // Complete the attempt (server calculates scores)
+      await completeTestAttempt.mutateAsync({
         attemptId: state.attemptId,
-        correctAnswers,
-        incorrectAnswers,
-        totalQuestions: questions.length,
       });
 
-      // Calculate section-wise scores
-      const sectionScores = sections.map(section => {
-        const sectionQuestions = questions.filter(q => q.section_id === section.id);
-        const sectionResponses = allResponses.filter(r => 
-          sectionQuestions.some(sq => sq.id === r.questionId)
-        );
-        const correct = sectionResponses.filter(r => r.isCorrect).length;
-        return {
-          sectionName: section.name,
-          total: sectionQuestions.length,
-          correct,
-        };
-      });
-
-      // Build detailed question data for results page
-      const detailedQuestions = questions.map(q => {
-        const response = allResponses.find(r => r.questionId === q.id);
-        return {
-          id: q.id,
-          question_text: q.question_text,
-          option_a: q.option_a,
-          option_b: q.option_b,
-          option_c: q.option_c,
-          option_d: q.option_d,
-          correct_answer: q.correct_answer,
-          section_name: (q as QuestionWithSection).section_name,
-          selected_answer: response?.selectedAnswer || null,
-          is_correct: response?.isCorrect || false,
-          time_taken: response?.timeTaken || 0,
-        };
+      // Fetch complete results including correct answers from server
+      const results = await getTestResults.mutateAsync({
+        attemptId: state.attemptId,
       });
 
       navigate('/result', { 
         state: { 
           attempt: {
-            ...attempt,
-            totalQuestions: questions.length,
-            correctAnswers,
-            incorrectAnswers,
+            ...results.attempt,
+            totalQuestions: results.attempt.total_questions,
+            correctAnswers: results.attempt.correct_answers,
+            incorrectAnswers: results.attempt.incorrect_answers,
           },
-          sectionScores,
+          sectionScores: results.sectionScores,
           candidateName: state.candidateName,
-          detailedQuestions,
+          detailedQuestions: results.detailedQuestions,
         } 
       });
     } catch (error) {
@@ -185,7 +145,7 @@ export default function Test() {
     );
   }
 
-  // Transform question for QuestionCard component
+  // Transform question for QuestionCard component (without correct_answer for security)
   const questionForCard = {
     id: currentQuestion.id,
     sectionId: currentQuestion.section_id,
@@ -194,7 +154,7 @@ export default function Test() {
     optionB: currentQuestion.option_b,
     optionC: currentQuestion.option_c,
     optionD: currentQuestion.option_d,
-    correctAnswer: currentQuestion.correct_answer as 'A' | 'B' | 'C' | 'D',
+    correctAnswer: 'A' as 'A' | 'B' | 'C' | 'D', // Placeholder - not used during test
     timeLimit: currentQuestion.time_limit,
     createdAt: new Date(currentQuestion.created_at),
     sectionName: currentQuestion.section_name,

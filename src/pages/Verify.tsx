@@ -6,7 +6,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { GraduationCap, ArrowLeft, User, Mail, Phone, AlertCircle, CheckCircle } from 'lucide-react';
-import { useFindCandidate, useUpdateCandidateStatus, useCreateTestAttempt, useTestSettings, useTestQuestions } from '@/hooks/useDatabase';
+import { useFindCandidate, useCreateTestAttempt, useTestSettings, useTestQuestions } from '@/hooks/useDatabase';
 
 const verifySchema = z.object({
   fullName: z.string().trim().min(2, 'Name must be at least 2 characters').max(100, 'Name is too long'),
@@ -30,7 +30,6 @@ export default function Verify() {
   const { data: testSettings, isLoading: isLoadingSettings } = useTestSettings();
   const { data: questions, isLoading: isLoadingQuestions } = useTestQuestions();
   const findCandidate = useFindCandidate();
-  const updateCandidateStatus = useUpdateCandidateStatus();
   const createTestAttempt = useCreateTestAttempt();
 
   const handleInputChange = (field: keyof VerifyFormData, value: string) => {
@@ -84,16 +83,10 @@ export default function Verify() {
         return;
       }
 
-      // Create test attempt
+      // Create test attempt (edge function also handles candidate status update)
       const attempt = await createTestAttempt.mutateAsync({
         candidateId: result.candidateId!,
         totalQuestions: questions?.length || 0,
-      });
-
-      // Update candidate status
-      await updateCandidateStatus.mutateAsync({
-        id: result.candidateId!,
-        status: 'ATTEMPTED',
       });
 
       // Navigate to test with attempt info
