@@ -5,3 +5,6 @@ verify_jwt = false
 
 [functions.verify-candidate]
 verify_jwt = false
+
+[functions.test-operations]
+verify_jwt = false
