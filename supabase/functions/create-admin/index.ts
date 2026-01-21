@@ -5,12 +5,44 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
+// In-memory rate limiting (per-instance, resets on function cold start)
+const rateLimits = new Map<string, { count: number; resetAt: number }>()
+
+function checkRateLimit(identifier: string, maxRequests: number, windowMs: number): boolean {
+  const now = Date.now()
+  const limit = rateLimits.get(identifier)
+  
+  if (!limit || now > limit.resetAt) {
+    rateLimits.set(identifier, { count: 1, resetAt: now + windowMs })
+    return true
+  }
+  
+  if (limit.count >= maxRequests) {
+    return false
+  }
+  
+  limit.count++
+  return true
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders })
   }
 
   try {
+    // Rate limit by IP: 3 attempts per minute
+    const clientIP = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || 
+                     req.headers.get('x-real-ip') || 
+                     'unknown'
+    
+    if (!checkRateLimit(`create-admin:${clientIP}`, 3, 60000)) {
+      console.log('Rate limit exceeded for IP:', clientIP)
+      return new Response(JSON.stringify({ error: 'Too many requests. Please try again in a minute.' }), {
+        status: 429,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      })
+    }
     // SECURITY: Require authentication
     const authHeader = req.headers.get('Authorization')
     if (!authHeader?.startsWith('Bearer ')) {
