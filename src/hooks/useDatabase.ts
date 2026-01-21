@@ -269,6 +269,7 @@ export function useTestAttempts() {
   return useQuery({
     queryKey: ['test_attempts'],
     queryFn: async () => {
+      // Admin users can use direct query, but for security we use edge function
       const { data, error } = await supabase
         .from('test_attempts')
         .select('*')
@@ -283,18 +284,23 @@ export function useCreateTestAttempt() {
   const queryClient = useQueryClient();
   return useMutation({
     mutationFn: async ({ candidateId, totalQuestions }: { candidateId: string; totalQuestions: number }) => {
-      const { data, error } = await supabase
-        .from('test_attempts')
-        .insert([{ 
-          candidate_id: candidateId, 
-          total_questions: totalQuestions,
-          correct_answers: 0,
-          incorrect_answers: 0,
-          total_score: 0
-        }])
-        .select()
-        .single();
-      if (error) throw error;
+      const { data, error } = await supabase.functions.invoke('test-operations', {
+        body: {
+          action: 'create_attempt',
+          candidateId,
+          totalQuestions
+        }
+      });
+      
+      if (error) {
+        console.error('Create attempt error:', error);
+        throw new Error('Failed to create test attempt');
+      }
+      
+      if (data.error) {
+        throw new Error(data.error);
+      }
+      
       return data as TestAttempt;
     },
     onSuccess: () => {
@@ -317,19 +323,25 @@ export function useCompleteTestAttempt() {
       incorrectAnswers: number;
       totalQuestions: number;
     }) => {
-      const totalScore = totalQuestions > 0 ? Math.round((correctAnswers / totalQuestions) * 100) : 0;
-      const { data, error } = await supabase
-        .from('test_attempts')
-        .update({ 
-          completed_at: new Date().toISOString(),
-          correct_answers: correctAnswers,
-          incorrect_answers: incorrectAnswers,
-          total_score: totalScore
-        })
-        .eq('id', attemptId)
-        .select()
-        .single();
-      if (error) throw error;
+      const { data, error } = await supabase.functions.invoke('test-operations', {
+        body: {
+          action: 'complete_attempt',
+          attemptId,
+          correctAnswers,
+          incorrectAnswers,
+          totalQuestions
+        }
+      });
+      
+      if (error) {
+        console.error('Complete attempt error:', error);
+        throw new Error('Failed to complete test attempt');
+      }
+      
+      if (data.error) {
+        throw new Error(data.error);
+      }
+      
       return data as TestAttempt;
     },
     onSuccess: () => {
@@ -348,12 +360,26 @@ export function useSaveQuestionResponse() {
       is_correct: boolean;
       time_taken: number;
     }) => {
-      const { data, error } = await supabase
-        .from('question_responses')
-        .insert([response])
-        .select()
-        .single();
-      if (error) throw error;
+      const { data, error } = await supabase.functions.invoke('test-operations', {
+        body: {
+          action: 'save_response',
+          attemptId: response.attempt_id,
+          questionId: response.question_id,
+          selectedAnswer: response.selected_answer,
+          isCorrect: response.is_correct,
+          timeTaken: response.time_taken
+        }
+      });
+      
+      if (error) {
+        console.error('Save response error:', error);
+        throw new Error('Failed to save response');
+      }
+      
+      if (data.error) {
+        throw new Error(data.error);
+      }
+      
       return data;
     },
   });
@@ -363,11 +389,22 @@ export function useQuestionResponses(attemptId: string) {
   return useQuery({
     queryKey: ['question_responses', attemptId],
     queryFn: async () => {
-      const { data, error } = await supabase
-        .from('question_responses')
-        .select('*')
-        .eq('attempt_id', attemptId);
-      if (error) throw error;
+      const { data, error } = await supabase.functions.invoke('test-operations', {
+        body: {
+          action: 'get_responses',
+          attemptId
+        }
+      });
+      
+      if (error) {
+        console.error('Get responses error:', error);
+        throw new Error('Failed to get responses');
+      }
+      
+      if (data.error) {
+        throw new Error(data.error);
+      }
+      
       return data as QuestionResponse[];
     },
     enabled: !!attemptId,

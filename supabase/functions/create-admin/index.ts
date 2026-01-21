@@ -11,13 +11,83 @@ Deno.serve(async (req) => {
   }
 
   try {
-    const { email, password } = await req.json()
+    // SECURITY: Require authentication
+    const authHeader = req.headers.get('Authorization')
+    if (!authHeader?.startsWith('Bearer ')) {
+      return new Response(JSON.stringify({ error: 'Unauthorized - no token provided' }), {
+        status: 401,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      })
+    }
 
+    // Create client with caller's auth to verify they are an admin
+    const supabaseClient = createClient(
+      Deno.env.get('SUPABASE_URL') ?? '',
+      Deno.env.get('SUPABASE_ANON_KEY') ?? '',
+      { global: { headers: { Authorization: authHeader } } }
+    )
+
+    // Verify caller's token and get their user
+    const token = authHeader.replace('Bearer ', '')
+    const { data: claimsData, error: claimsError } = await supabaseClient.auth.getClaims(token)
+    
+    if (claimsError || !claimsData?.claims) {
+      console.error('Token validation failed:', claimsError)
+      return new Response(JSON.stringify({ error: 'Invalid or expired token' }), {
+        status: 401,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      })
+    }
+
+    const callerUserId = claimsData.claims.sub
+
+    // Create admin client to check roles
     const supabaseAdmin = createClient(
       Deno.env.get('SUPABASE_URL') ?? '',
       Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '',
       { auth: { autoRefreshToken: false, persistSession: false } }
     )
+
+    // Check if caller is an admin
+    const { data: callerRole, error: roleError } = await supabaseAdmin
+      .from('user_roles')
+      .select('role')
+      .eq('user_id', callerUserId)
+      .eq('role', 'admin')
+      .maybeSingle()
+
+    if (roleError) {
+      console.error('Error checking caller role:', roleError)
+      return new Response(JSON.stringify({ error: 'Failed to verify permissions' }), {
+        status: 500,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      })
+    }
+
+    if (!callerRole) {
+      console.warn('Non-admin user attempted to create admin:', callerUserId)
+      return new Response(JSON.stringify({ error: 'Admin privileges required' }), {
+        status: 403,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      })
+    }
+
+    // Parse and validate request body
+    const { email, password } = await req.json()
+
+    if (!email || typeof email !== 'string' || !email.includes('@')) {
+      return new Response(JSON.stringify({ error: 'Valid email is required' }), {
+        status: 400,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      })
+    }
+
+    if (!password || typeof password !== 'string' || password.length < 8) {
+      return new Response(JSON.stringify({ error: 'Password must be at least 8 characters' }), {
+        status: 400,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      })
+    }
 
     // Try to create the user first
     let userId: string | null = null
@@ -60,19 +130,19 @@ Deno.serve(async (req) => {
     }
 
     // Add admin role (upsert to avoid duplicates)
-    const { error: roleError } = await supabaseAdmin
+    const { error: roleInsertError } = await supabaseAdmin
       .from('user_roles')
       .upsert({ user_id: userId, role: 'admin' }, { onConflict: 'user_id,role' })
 
-    if (roleError) {
-      console.error('Error adding role:', roleError)
-      return new Response(JSON.stringify({ error: roleError.message }), {
+    if (roleInsertError) {
+      console.error('Error adding role:', roleInsertError)
+      return new Response(JSON.stringify({ error: roleInsertError.message }), {
         status: 400,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' }
       })
     }
 
-    console.log('Admin user setup complete:', email, userId)
+    console.log('Admin user created by:', callerUserId, 'for:', email, userId)
     return new Response(JSON.stringify({ success: true, userId }), {
       headers: { ...corsHeaders, 'Content-Type': 'application/json' }
     })
