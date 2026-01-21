@@ -5,6 +5,26 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
+// In-memory rate limiting (per-instance, resets on function cold start)
+const rateLimits = new Map<string, { count: number; resetAt: number }>()
+
+function checkRateLimit(identifier: string, maxRequests: number, windowMs: number): boolean {
+  const now = Date.now()
+  const limit = rateLimits.get(identifier)
+  
+  if (!limit || now > limit.resetAt) {
+    rateLimits.set(identifier, { count: 1, resetAt: now + windowMs })
+    return true
+  }
+  
+  if (limit.count >= maxRequests) {
+    return false
+  }
+  
+  limit.count++
+  return true
+}
+
 interface CreateAttemptRequest {
   action: 'create_attempt'
   candidateId: string
@@ -53,6 +73,30 @@ Deno.serve(async (req) => {
     if (!body.action) {
       return new Response(JSON.stringify({ error: 'Action is required' }), {
         status: 400,
+        headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+      })
+    }
+
+    // Rate limit by IP for all actions
+    const clientIP = req.headers.get('x-forwarded-for')?.split(',')[0]?.trim() || 
+                     req.headers.get('x-real-ip') || 
+                     'unknown'
+    
+    // Different rate limits based on action type
+    const rateLimitConfig: Record<string, { max: number; windowMs: number }> = {
+      'create_attempt': { max: 3, windowMs: 60000 },     // 3 per minute
+      'save_response': { max: 120, windowMs: 60000 },    // 120 per minute (allows fast test-taking)
+      'complete_attempt': { max: 5, windowMs: 60000 },   // 5 per minute
+      'get_attempt': { max: 20, windowMs: 60000 },       // 20 per minute
+      'get_responses': { max: 20, windowMs: 60000 },     // 20 per minute
+      'get_results': { max: 10, windowMs: 60000 },       // 10 per minute
+    }
+    
+    const config = rateLimitConfig[body.action] || { max: 10, windowMs: 60000 }
+    if (!checkRateLimit(`test:${body.action}:${clientIP}`, config.max, config.windowMs)) {
+      console.log('Rate limit exceeded for action:', body.action, 'IP:', clientIP)
+      return new Response(JSON.stringify({ error: 'Too many requests. Please slow down.' }), {
+        status: 429,
         headers: { ...corsHeaders, 'Content-Type': 'application/json' }
       })
     }
