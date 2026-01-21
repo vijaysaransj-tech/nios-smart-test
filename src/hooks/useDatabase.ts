@@ -312,24 +312,11 @@ export function useCreateTestAttempt() {
 export function useCompleteTestAttempt() {
   const queryClient = useQueryClient();
   return useMutation({
-    mutationFn: async ({ 
-      attemptId, 
-      correctAnswers, 
-      incorrectAnswers,
-      totalQuestions
-    }: { 
-      attemptId: string; 
-      correctAnswers: number; 
-      incorrectAnswers: number;
-      totalQuestions: number;
-    }) => {
+    mutationFn: async ({ attemptId }: { attemptId: string }) => {
       const { data, error } = await supabase.functions.invoke('test-operations', {
         body: {
           action: 'complete_attempt',
           attemptId,
-          correctAnswers,
-          incorrectAnswers,
-          totalQuestions
         }
       });
       
@@ -357,7 +344,6 @@ export function useSaveQuestionResponse() {
       attempt_id: string;
       question_id: string;
       selected_answer: string | null;
-      is_correct: boolean;
       time_taken: number;
     }) => {
       const { data, error } = await supabase.functions.invoke('test-operations', {
@@ -366,7 +352,6 @@ export function useSaveQuestionResponse() {
           attemptId: response.attempt_id,
           questionId: response.question_id,
           selectedAnswer: response.selected_answer,
-          isCorrect: response.is_correct,
           timeTaken: response.time_taken
         }
       });
@@ -380,7 +365,7 @@ export function useSaveQuestionResponse() {
         throw new Error(data.error);
       }
       
-      return data;
+      return data as { is_correct: boolean };
     },
   });
 }
@@ -408,6 +393,51 @@ export function useQuestionResponses(attemptId: string) {
       return data as QuestionResponse[];
     },
     enabled: !!attemptId,
+  });
+}
+
+// Get test results after completion (includes correct answers)
+export function useGetTestResults() {
+  return useMutation({
+    mutationFn: async ({ attemptId }: { attemptId: string }) => {
+      const { data, error } = await supabase.functions.invoke('test-operations', {
+        body: {
+          action: 'get_results',
+          attemptId
+        }
+      });
+      
+      if (error) {
+        console.error('Get results error:', error);
+        throw new Error('Failed to get results');
+      }
+      
+      if (data.error) {
+        throw new Error(data.error);
+      }
+      
+      return data as {
+        attempt: TestAttempt;
+        detailedQuestions: Array<{
+          id: string;
+          question_text: string;
+          option_a: string;
+          option_b: string;
+          option_c: string;
+          option_d: string;
+          correct_answer: string;
+          section_name: string;
+          selected_answer: string | null;
+          is_correct: boolean;
+          time_taken: number;
+        }>;
+        sectionScores: Array<{
+          sectionName: string;
+          total: number;
+          correct: number;
+        }>;
+      };
+    },
   });
 }
 
@@ -455,7 +485,7 @@ export function useUpdateTestSettings() {
   });
 }
 
-// Get all test questions with section info
+// Get all test questions with section info (uses secure view for candidates)
 export function useTestQuestions() {
   return useQuery({
     queryKey: ['test_questions'],
@@ -466,16 +496,17 @@ export function useTestQuestions() {
         .order('display_order', { ascending: true });
       if (sectionsError) throw sectionsError;
 
+      // Use questions_public view which excludes correct_answer for non-admins
       const { data: questions, error: questionsError } = await supabase
-        .from('questions')
+        .from('questions_public')
         .select('*')
         .order('created_at', { ascending: true });
       if (questionsError) throw questionsError;
 
       // Combine questions with section info, ordered by section display order
-      const allQuestions: Array<Question & { section_name: string }> = [];
+      const allQuestions: Array<Omit<Question, 'correct_answer'> & { section_name: string }> = [];
       (sections as Section[]).forEach(section => {
-        const sectionQuestions = (questions as Question[]).filter(q => q.section_id === section.id);
+        const sectionQuestions = (questions as Omit<Question, 'correct_answer'>[]).filter(q => q.section_id === section.id);
         sectionQuestions.forEach(q => {
           allQuestions.push({ ...q, section_name: section.name });
         });
